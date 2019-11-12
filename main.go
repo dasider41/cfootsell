@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
 	"log"
 	"net/http"
@@ -11,7 +12,10 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
+	"github.com/joho/godotenv"
 	"golang.org/x/net/html"
+
+	_ "github.com/go-sql-driver/mysql"
 )
 
 const footSellURL = "https://footsell.com"
@@ -19,6 +23,14 @@ const footSellURL = "https://footsell.com"
 type schCond struct {
 	size    int
 	keyword string
+}
+
+type product struct {
+	title     string
+	condition string
+	price     int
+	member    string
+	updated   string
 }
 
 func main() {
@@ -29,24 +41,31 @@ func main() {
 
 	baseURL, err := cond.getURL()
 	errCheck(err)
-	fmt.Println(baseURL)
+	// fmt.Println(baseURL)
 
 	node, err := sendRequest(baseURL)
 	errCheck(err)
+
+	var p product
 
 	doc := goquery.NewDocumentFromNode(node)
 	table := doc.Find("#list_table")
 	table.Each(func(i int, item *goquery.Selection) {
 		item.Find(".list_table_row").Each(func(j int, block *goquery.Selection) {
-			title := getText(block, ".list_subject_a")
-			condition := getText(block, "span.list_market_used")
+			p.title = getText(block, ".list_subject_a")
+			p.condition = getText(block, "span.list_market_used")
 			txtPrice := getText(block, ".list_market_price")
 			price, _ := numberOnly(txtPrice)
-			errCheck(err)
-			member := getText(block, "span.member")
+			p.price = price
+			p.member = getText(block, "span.member")
 			txtDate := getText(block, "span.list_table_dates")
-			date := sqlDateFormat(txtDate)
-			fmt.Printf("%s, %s, %s, %d, %s\n", title, condition, member, price, date)
+			p.updated = sqlDateFormat(txtDate)
+			count, err := updateTransaction(p)
+			errCheck(err)
+			if count > 0 {
+				fmt.Printf("%v\n", p)
+				// send update result email with p
+			}
 		})
 	})
 }
@@ -96,6 +115,7 @@ func getText(block *goquery.Selection, selector string) string {
 func errCheck(err error) {
 	if err != nil {
 		log.Fatal(err)
+		// TODO :: Report an error by eamil
 	}
 }
 
@@ -114,6 +134,51 @@ func numberOnly(text string) (int, error) {
 func sqlDateFormat(tDate string) string {
 	layoutIN := "06-01-02"
 	layoutOUT := "2006-01-02"
-	t, _ := time.Parse(layoutIN, tDate)
+	t, err := time.Parse(layoutIN, tDate)
+
+	if err != nil {
+		return time.Now().Format(layoutOUT)
+	}
+
 	return t.Format(layoutOUT)
+}
+
+func initDB() *sql.DB {
+	err := godotenv.Load()
+	errCheck(err)
+	env, err := godotenv.Read()
+	errCheck(err)
+
+	dbConn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s",
+		env["DB_USERNAME"],
+		env["DB_PASSWORD"],
+		env["DB_HOST"],
+		env["DB_PORT"],
+		env["DB_DATABASE"])
+	db, err := sql.Open("mysql", dbConn)
+	errCheck(err)
+	return db
+}
+
+func updateTransaction(e product) (int64, error) {
+	conn := initDB()
+	defer conn.Close()
+
+	stmInsertQuery, err := conn.Prepare("INSERT IGNORE INTO market SET " +
+		"`title`=?," +
+		"`condition`=?," +
+		"`price`=?," +
+		"`member`=?," +
+		"`updated`=?")
+
+	if err != nil {
+		return 0, err
+	}
+
+	defer stmInsertQuery.Close()
+
+	res, err := stmInsertQuery.Exec(e.title, e.condition, e.price, e.member, e.updated)
+	errCheck(err)
+	count, err := res.RowsAffected()
+	return count, nil
 }

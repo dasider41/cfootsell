@@ -12,6 +12,9 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/ses"
 	"github.com/joho/godotenv"
 	"golang.org/x/net/html"
 
@@ -33,7 +36,17 @@ type product struct {
 	updated   string
 }
 
+const (
+	// Subject : Email title
+	Subject = "Footsell market notification"
+	// CharSet : Email charactor set
+	CharSet = "UTF-8"
+)
+
 func main() {
+	err := godotenv.Load()
+	errCheck(err)
+
 	cond := schCond{
 		size:    285,
 		keyword: "고어",
@@ -50,6 +63,7 @@ func main() {
 
 	doc := goquery.NewDocumentFromNode(node)
 	table := doc.Find("#list_table")
+	email := ""
 	table.Each(func(i int, item *goquery.Selection) {
 		item.Find(".list_table_row").Each(func(j int, block *goquery.Selection) {
 			p.title = getText(block, ".list_subject_a")
@@ -63,11 +77,14 @@ func main() {
 			count, err := updateTransaction(p)
 			errCheck(err)
 			if count > 0 {
-				fmt.Printf("%v\n", p)
-				// send update result email with p
+				email += fmt.Sprintf("%v\n", p)
 			}
 		})
 	})
+
+	if len(email) > 0 {
+		sendEmail(email)
+	}
 }
 
 func (cond schCond) getURL() (string, error) {
@@ -82,6 +99,9 @@ func (cond schCond) getURL() (string, error) {
 	params.Add("stx", cond.keyword)
 	params.Add("bo_table", "m51")
 	params.Add("sfl", "wr_subject")
+	params.Add("sop", "and")
+	params.Add("price1", "0")
+	params.Add("price2", "0")
 
 	reqURL.RawQuery = params.Encode()
 	return reqURL.String(), nil
@@ -144,8 +164,6 @@ func sqlDateFormat(tDate string) string {
 }
 
 func initDB() *sql.DB {
-	err := godotenv.Load()
-	errCheck(err)
 	env, err := godotenv.Read()
 	errCheck(err)
 
@@ -181,4 +199,43 @@ func updateTransaction(e product) (int64, error) {
 	errCheck(err)
 	count, err := res.RowsAffected()
 	return count, nil
+}
+
+func sendEmail(TextBody string) {
+	env, err := godotenv.Read()
+	errCheck(err)
+
+	sess, err := session.NewSession()
+	errCheck(err)
+	svc := ses.New(sess)
+
+	input := &ses.SendEmailInput{
+		Destination: &ses.Destination{
+			CcAddresses: []*string{},
+			ToAddresses: []*string{
+				aws.String(env["RECIPIENT"]),
+			},
+		},
+		Message: &ses.Message{
+			Body: &ses.Body{
+				// TODO:: change email template
+				// Html: &ses.Content{
+				// 	Charset: aws.String(CharSet),
+				// 	Data:    aws.String(HtmlBody),
+				// },
+				Text: &ses.Content{
+					Charset: aws.String(CharSet),
+					Data:    aws.String(TextBody),
+				},
+			},
+			Subject: &ses.Content{
+				Charset: aws.String(CharSet),
+				Data:    aws.String(Subject),
+			},
+		},
+		Source: aws.String(env["SENDER"]),
+	}
+
+	_, err = svc.SendEmail(input)
+	errCheck(err)
 }

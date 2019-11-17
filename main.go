@@ -33,6 +33,7 @@ type product struct {
 	condition string
 	price     int
 	member    string
+	size      int
 	updated   string
 }
 
@@ -42,52 +43,87 @@ const (
 	// CharSet : Email charactor set
 	CharSet = "UTF-8"
 )
+const (
+	// True : 1
+	True = 1
+	// False : 0
+	False = 0
+)
 
 func main() {
 	err := godotenv.Load()
 	errCheck(err)
+	list, err := getConditionList()
+	errCheck(err)
 
-	cond := schCond{
-		size:    285,
-		keyword: "고어",
+	for _, v := range list {
+		// fmt.Printf("%v\n", v)
+		marketSearch(v)
 	}
 
-	baseURL, err := cond.getURL()
+	alertNotification()
+}
+
+func getConditionList() ([]schCond, error) {
+	conn := initDB()
+	defer conn.Close()
+
+	var list []schCond
+
+	results, err := conn.Query("SELECT size, keyword  FROM conditions")
+	if err != nil {
+		return nil, err
+	}
+
+	for results.Next() {
+		var cond schCond
+		err = results.Scan(&cond.size, &cond.keyword)
+		list = append(list, cond)
+	}
+
+	return list, nil
+}
+
+func marketSearch(cond schCond) {
+	baseURL, err := cond.generateURL()
 	errCheck(err)
 	// fmt.Println(baseURL)
 
-	node, err := sendRequest(baseURL)
+	node, err := footsellMarketRequest(baseURL)
 	errCheck(err)
 
-	var p product
-
 	doc := goquery.NewDocumentFromNode(node)
+
 	table := doc.Find("#list_table")
-	email := ""
 	table.Each(func(i int, item *goquery.Selection) {
 		item.Find(".list_table_row").Each(func(j int, block *goquery.Selection) {
-			p.title = getText(block, ".list_subject_a")
-			p.condition = getText(block, "span.list_market_used")
-			txtPrice := getText(block, ".list_market_price")
-			price, _ := numberOnly(txtPrice)
-			p.price = price
-			p.member = getText(block, "span.member")
-			txtDate := getText(block, "span.list_table_dates")
-			p.updated = sqlDateFormat(txtDate)
-			count, err := updateTransaction(p)
-			errCheck(err)
-			if count > 0 {
-				email += fmt.Sprintf("%v\n", p)
+			p := getProduct(cond, block)
+			if p.isAvailable() {
+				// fmt.Printf("%v\n", p)
+				_, err := updateTransaction(p)
+				errCheck(err)
 			}
 		})
 	})
-
-	if len(email) > 0 {
-		sendEmail(email)
-	}
 }
 
-func (cond schCond) getURL() (string, error) {
+func getProduct(cond schCond, block *goquery.Selection) product {
+	var p product
+
+	p.title = getText(block, ".list_subject_a")
+	p.condition = getText(block, "span.list_market_used")
+	p.size = cond.size
+	txtPrice := getText(block, ".list_market_price")
+	price, _ := numberOnly(txtPrice)
+	p.price = price
+	p.member = getText(block, "span.member")
+	txtDate := getText(block, "span.list_table_dates")
+	p.updated = sqlDateFormat(txtDate)
+
+	return p
+}
+
+func (cond schCond) generateURL() (string, error) {
 	reqURL, err := url.Parse(footSellURL)
 	if err != nil {
 		return "", err
@@ -107,7 +143,14 @@ func (cond schCond) getURL() (string, error) {
 	return reqURL.String(), nil
 }
 
-func sendRequest(url string) (*html.Node, error) {
+func (p product) isAvailable() bool {
+	if len(p.member) > 0 {
+		return true
+	}
+	return false
+}
+
+func footsellMarketRequest(url string) (*html.Node, error) {
 	req, err := http.NewRequest("GET", url, nil)
 	req.Header.Add("user-agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/78.0.3904.97 Safari/537.36")
 	if err != nil {
@@ -185,6 +228,7 @@ func updateTransaction(e product) (int64, error) {
 	stmInsertQuery, err := conn.Prepare("INSERT IGNORE INTO market SET " +
 		"`title`=?," +
 		"`condition`=?," +
+		"`size`=?," +
 		"`price`=?," +
 		"`member`=?," +
 		"`updated`=?")
@@ -195,10 +239,74 @@ func updateTransaction(e product) (int64, error) {
 
 	defer stmInsertQuery.Close()
 
-	res, err := stmInsertQuery.Exec(e.title, e.condition, e.price, e.member, e.updated)
+	res, err := stmInsertQuery.Exec(e.title, e.condition, e.size, e.price, e.member, e.updated)
 	errCheck(err)
 	count, err := res.RowsAffected()
 	return count, nil
+}
+
+func alertNotification() {
+	conn := initDB()
+	defer conn.Close()
+
+	rows, err := conn.Query("SELECT `id`, "+
+		"`title`, "+
+		"`size`, "+
+		"`condition`, "+
+		"`price`, "+
+		"`member`, "+
+		"`updated` "+
+		"FROM market "+
+		"WHERE isNew = ?", True)
+	errCheck(err)
+	defer rows.Close()
+
+	textBody := ""
+	var arrNewID []int
+
+	for rows.Next() {
+		var id int
+		var p product
+		err = rows.Scan(
+			&id,
+			&p.title,
+			&p.size,
+			&p.condition,
+			&p.price,
+			&p.member,
+			&p.updated)
+
+		textBody += fmt.Sprintf("%s, %d, %s, %d, %s, %s\n",
+			p.title,
+			p.size,
+			p.condition,
+			p.price,
+			p.member,
+			p.updated)
+		arrNewID = append(arrNewID, id)
+	}
+
+	if len(arrNewID) > 0 {
+		sendEmail(textBody)
+		updateItemStatus(arrNewID)
+	}
+}
+
+func updateItemStatus(arr []int) {
+	conn := initDB()
+	defer conn.Close()
+
+	stmUpdateQuery, err := conn.Prepare(
+		"UPDATE market SET " +
+			"`isNew` = ? " +
+			" WHERE id = ?")
+	errCheck(err)
+	defer stmUpdateQuery.Close()
+
+	for _, id := range arr {
+		_, err := stmUpdateQuery.Exec(False, id)
+		errCheck(err)
+	}
 }
 
 func sendEmail(TextBody string) {

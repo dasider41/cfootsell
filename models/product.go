@@ -1,8 +1,11 @@
 package models
 
 import (
+	"net/http"
+
 	"github.com/dasider41/cfootsell/db"
 	"github.com/dasider41/cfootsell/util"
+	"github.com/gin-gonic/gin"
 )
 
 // Product : product model
@@ -64,4 +67,61 @@ func UpdateTransaction(e Product) (int64, error) {
 	util.ErrCheck(err)
 	count, err := res.RowsAffected()
 	return count, nil
+}
+
+// GetProductList :
+func GetProductList() ([]Product, error) {
+	conn := db.InitDB()
+	defer conn.Close()
+
+	var list []Product
+
+	results, err := conn.Query("SELECT " +
+		"`title`, " +
+		"`condition`, " +
+		"`price`, " +
+		"`member`, " +
+		"`size`, " +
+		"`updated` " +
+		" FROM market")
+
+	if err != nil {
+		return nil, err
+	}
+
+	for results.Next() {
+		var p Product
+		err = results.Scan(
+			&p.Title,
+			&p.Condition,
+			&p.Price,
+			&p.Member,
+			&p.Size,
+			&p.Updated,
+		)
+		list = append(list, p)
+	}
+
+	return list, nil
+}
+
+// FetchAllProduct :
+func FetchAllProduct(c *gin.Context) {
+	conn := db.InitDB()
+	defer conn.Close()
+
+	list, err := GetProductList()
+
+	if err != nil {
+		c.JSON(200, gin.H{
+			"status":  http.StatusNotFound,
+			"message": "Not found.",
+		})
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"status":  http.StatusOK,
+		"message": list,
+	})
 }

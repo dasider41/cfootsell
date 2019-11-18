@@ -11,7 +11,8 @@ import (
 	"golang.org/x/net/html"
 )
 
-func Update(cond models.SchCond) {
+// UpdateMarket :
+func UpdateMarket(cond models.SchCond) {
 	baseURL, err := cond.GenerateURL()
 	util.ErrCheck(err)
 	// fmt.Println(baseURL)

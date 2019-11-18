@@ -1,10 +1,12 @@
 package models
 
 import (
+	"net/http"
 	"net/url"
 	"strconv"
 
 	"github.com/dasider41/cfootsell/db"
+	"github.com/gin-gonic/gin"
 )
 
 const footSellURL = "https://footsell.com"
@@ -55,5 +57,25 @@ func GetConditionList() ([]SchCond, error) {
 	}
 
 	return list, nil
+}
 
+// FetchAllConditions :
+func FetchAllConditions(c *gin.Context) {
+	conn := db.InitDB()
+	defer conn.Close()
+
+	list, err := GetConditionList()
+
+	if err != nil {
+		c.JSON(200, gin.H{
+			"status":  http.StatusNotFound,
+			"message": "Not found.",
+		})
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"status":  http.StatusOK,
+		"message": list,
+	})
 }
